@@ -8,7 +8,7 @@ const PORT = 8080;
 
 app.use(express.json());
 
-const BASE_DIR = path.join(__dirname, "scam");
+const BASE_DIR = "/storage/emulated/0/scam";
 const ALLOWED_FOLDERS = ["her", "him", "withYou"];
 
 /* -----------------------
