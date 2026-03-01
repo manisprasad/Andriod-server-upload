@@ -8,7 +8,8 @@ const PORT = 8080;
 
 app.use(express.json());
 
-const BASE_DIR = "/storage/emulated/0/scam";
+const BASE_DIR = "/storage/emulated/0/scam"; //for android
+// const BASE_DIR = path.join(__dirname, "storage"); //for local testing
 const ALLOWED_FOLDERS = ["her", "him", "withYou"];
 
 /* -----------------------
@@ -80,8 +81,31 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
 });
 
+// Temporary storage for multi-file uploads
+const tempStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const tempPath = path.join(BASE_DIR, "temp");
+    if (!fs.existsSync(tempPath)) {
+      fs.mkdirSync(tempPath, { recursive: true });
+    }
+    cb(null, tempPath);
+  },
+  filename: function (req, file, cb) {
+    const now = new Date();
+    const dateTime = now.toISOString().replace(/[:.]/g, '-').replace('T', '_').split('.')[0];
+    const originalName = file.originalname;
+    cb(null, `${dateTime}_${originalName}`);
+  },
+});
+
+const uploadMultiple = multer({
+  storage: tempStorage,
+  fileFilter,
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
+});
+
 /* -----------------------
-   Upload API
+   Upload API (Single File)
 ----------------------- */
 app.post("/upload", upload.single("file"), (req, res) => {
   if (!req.file) {
@@ -94,6 +118,105 @@ app.post("/upload", upload.single("file"), (req, res) => {
     filename: req.file.filename,
     path: req.file.path,
   });
+});
+
+/* -----------------------
+   Upload API (Multiple Files)
+   Body should include:
+   - files: array of files
+   - folders: JSON array/object mapping file indices to folder names
+   Example: folders = ["her", "him", "withYou"]
+----------------------- */
+app.post("/upload-multiple", uploadMultiple.array("files", 20), (req, res) => {
+  if (!req.files || req.files.length === 0) {
+    return res.status(400).json({ error: "No files uploaded" });
+  }
+
+  try {
+    // Parse folder mapping from request body
+    let folderMapping;
+    if (typeof req.body.folders === "string") {
+      folderMapping = JSON.parse(req.body.folders);
+    } else {
+      folderMapping = req.body.folders;
+    }
+
+    if (!Array.isArray(folderMapping)) {
+      throw new Error("folders must be an array");
+    }
+
+    if (folderMapping.length !== req.files.length) {
+      throw new Error("Number of folders must match number of files");
+    }
+
+    const results = [];
+    const errors = [];
+
+    // Process each file
+    req.files.forEach((file, index) => {
+      const targetFolder = folderMapping[index];
+
+      // Validate folder
+      if (!ALLOWED_FOLDERS.includes(targetFolder)) {
+        errors.push({
+          filename: file.originalname,
+          error: `Invalid folder: ${targetFolder}`,
+        });
+        // Delete temp file
+        fs.unlinkSync(file.path);
+        return;
+      }
+
+      // Move file to target folder
+      const targetPath = path.join(BASE_DIR, targetFolder);
+      if (!fs.existsSync(targetPath)) {
+        fs.mkdirSync(targetPath, { recursive: true });
+      }
+
+      const finalPath = path.join(targetPath, file.filename);
+
+      try {
+        fs.renameSync(file.path, finalPath);
+        results.push({
+          originalName: file.originalname,
+          filename: file.filename,
+          folder: targetFolder,
+          path: finalPath,
+        });
+      } catch (err) {
+        errors.push({
+          filename: file.originalname,
+          error: err.message,
+        });
+      }
+    });
+
+    // Clean up temp directory if empty
+    const tempPath = path.join(BASE_DIR, "temp");
+    if (fs.existsSync(tempPath)) {
+      const tempFiles = fs.readdirSync(tempPath);
+      if (tempFiles.length === 0) {
+        fs.rmdirSync(tempPath);
+      }
+    }
+
+    res.json({
+      message: "Upload processed",
+      success: results.length,
+      failed: errors.length,
+      results,
+      errors: errors.length > 0 ? errors : undefined,
+    });
+  } catch (error) {
+    // Clean up temp files on error
+    req.files.forEach((file) => {
+      if (fs.existsSync(file.path)) {
+        fs.unlinkSync(file.path);
+      }
+    });
+
+    res.status(400).json({ error: error.message });
+  }
 });
 
 /* -----------------------
